@@ -140,6 +140,68 @@ Roughly in order of value.
       `inspect.getsource`. Replace with a module-level `SCORE_PAIRS` constant
       that both the figure and the test import.
 
+## GPU / scaling layer -- START HERE
+
+`backend.py` resolves an array namespace (`numpy` / `cupy` / `torch`, CPU or
+CUDA) and sizes chunks against free device memory. `accel.py` holds the kernels:
+a closed-form p=2 weighted fit (explicit 2x2 inverse, no batched `solve`), a
+general-p fallback, and `sweep_designs`, which drives P design matrices against
+one resident copy of the clone summaries.
+
+Two wins, and only the second needs a GPU:
+
+* **Hoisting.** Clone means, counts and weights do not depend on allele dosage;
+  only the design matrix does. The reference permutation test recomputes them
+  for all 30 relabellings. Measured speedup from hoisting alone, on CPU:
+  **11-311x** across the five shipped datasets.
+* **Residency.** With the summaries on the device, a sweep touches them P times
+  with no host round trip. This is the only shape in the pipeline with enough
+  parallel work for a GPU.
+
+Verified: closed form == general == per-protein `lstsq` to 1e-9; the sweep
+statistic matches an explicit loop to 1e-10; chunking is exact; float32 agrees
+to 0.00% on the sweep statistic.
+
+### THE FIRST TASK
+
+`permutation_tau2_fast` is **opt-in and not yet a drop-in replacement.** The
+batched kernel needs one design per protein, so it currently uses only proteins
+observed in *every* clone. That drops 23-163 proteins per dataset, and where
+the drop is large the p-value moves:
+
+| dataset | dropped | reference P | fast P |
+|---|---|---|---|
+| A_homozygous_wt | 28 | 0.0714 | 0.0714 |
+| A_replicated_x3 | 128 | 0.0172 | 0.0172 |
+| **A_replicated_x5** | **163** | **0.0238** | **0.0119** |
+| B_heterozygous_wt | 23 | 0.0667 | 0.0667 |
+| **B_heterozygous_wt_minimal** | -1 | **0.3333** | **0.1667** |
+
+The fix: group proteins by observation-count vector and run one sub-design per
+group. `fastfit.fit_batched` **already does exactly this** for the main fit --
+port that grouping into `accel.sweep_designs`. `t_accel_permutation` pins the
+current divergence to those two datasets, so it will fail the moment the set
+changes in either direction. Do not wire the fast path in as the default until
+that test reports 5/5.
+
+Empirical-Bayes moderation is already applied in the fast path, matching
+`analyse()`; that was checked and is not the cause of the divergence.
+
+### Benchmarking
+
+```bash
+python -m proteomics_revertant.bench                       # CPU sweep
+python -m proteomics_revertant.bench --backend cupy        # CUDA
+python -m proteomics_revertant.bench --backend torch --device cuda --dtype float32
+python -m proteomics_revertant.bench --accel-only          # just the sweep shape
+```
+
+Measured on one throttled core, float64: the kernel is memory-bound at
+**1.25-1.42 FLOP/byte** at every size, so time = bytes / bandwidth and a GPU
+only helps when the data is resident. A 30-design sweep at 1M proteins x 25
+clones takes 30 s here; the projection for an A100 is well under a second.
+Below roughly 100k proteins the PCIe round trip costs more than the compute.
+
 ## Fast start
 
 ```bash

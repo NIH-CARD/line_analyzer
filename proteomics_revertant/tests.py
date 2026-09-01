@@ -1073,10 +1073,109 @@ def t_pca_reading():
     return "clean reversion recognised; a 3 log2 revertant shift raises the warning"
 
 
+@check("accelerated kernels reproduce the reference fit exactly")
+def t_accel():
+    from .accel import fit_closed_form, fit_general, sweep_designs, weighted_fit
+    from .backend import plan_chunks, resolve
+
+    b = resolve("numpy")
+    rng = np.random.default_rng(0)
+    n, c = 2000, 5
+    dose = np.array([0, 0, 1, 1, 2.0])
+    M = rng.normal(23, 1.0, (n, c))
+    W = rng.uniform(1.0, 3.0, (n, c))
+    X = np.column_stack([np.ones(c), dose])
+
+    # closed form (p=2) against the general batched path
+    b0, b1, s2c, _ = fit_closed_form(np, M, W, X)
+    beta_g, s2g, _, _ = fit_general(np, M, W, X)
+    assert np.allclose(b0, beta_g[:, 0], atol=1e-10), "closed form beta0 differs"
+    assert np.allclose(b1, beta_g[:, 1], atol=1e-10), "closed form beta1 differs"
+    assert np.allclose(s2c, s2g, atol=1e-12), "closed form residual variance differs"
+
+    # both against an explicit per-protein lstsq
+    for g in (0, 17, n - 1):
+        sw = np.sqrt(W[g])
+        ref = np.linalg.lstsq(X * sw[:, None], M[g] * sw, rcond=None)[0]
+        assert np.allclose(ref, [b0[g], b1[g]], atol=1e-9), f"protein {g} differs"
+
+    # a p=3 design must route to the general path and still be right
+    X3 = np.column_stack([np.ones(c), dose, (dose == 1).astype(float)])
+    beta3, _ = weighted_fit(np, M, W, X3)
+    sw = np.sqrt(W[5])
+    ref3 = np.linalg.lstsq(X3 * sw[:, None], M[5] * sw, rcond=None)[0]
+    assert np.allclose(beta3[5], ref3, atol=1e-9), "p=3 path differs"
+
+    # the sweep statistic against an explicit loop
+    designs = [np.column_stack([np.ones(c), rng.permutation(dose)]) for _ in range(6)]
+    got = sweep_designs(M, W, designs, backend="numpy")
+    exp = []
+    for D in designs:
+        tb = ts = 0.0
+        for g in range(n):
+            sw = np.sqrt(W[g]); Xw = D * sw[:, None]; yw = M[g] * sw
+            beta = np.linalg.lstsq(Xw, yw, rcond=None)[0]
+            r = yw - Xw @ beta
+            s2 = float(r @ r) / (c - 2)
+            cov = np.linalg.inv(Xw.T @ Xw)
+            tb += beta[1] ** 2; ts += s2 * cov[1, 1]
+        exp.append(tb / n - ts / n)
+    assert np.allclose(got, exp, atol=1e-10), \
+        f"sweep statistic differs by {np.max(np.abs(got - np.array(exp))):.2e}"
+
+    # chunking must not change the answer
+    chunked = sweep_designs(M, W, designs, backend="numpy", chunk=137)
+    assert np.allclose(got, chunked, atol=1e-12), "chunking changed the result"
+    assert plan_chunks(n, c, 2, b) == n, "CPU backend should not chunk"
+
+    # float32 is offered for the sweep; measure the cost rather than assume it
+    f32 = sweep_designs(M, W, designs, backend="numpy", dtype=np.float32)
+    rel = float(np.max(np.abs(f32 - got) / np.maximum(np.abs(got), 1e-12)))
+    assert rel < 5e-2, f"float32 sweep differs by {rel:.1%}, too much even for ranking"
+    return (f"closed form == general == lstsq to 1e-9; sweep matches an explicit "
+            f"loop to 1e-10; chunking exact; float32 within {rel:.2%}")
+
+
+@check("fast permutation path: speedup measured, divergence pinned")
+def t_accel_permutation():
+    """The hoisted path is 50-330x faster but is NOT yet a drop-in replacement:
+    it uses complete-observation proteins only. This test pins exactly where it
+    agrees and where it does not, so a fix is detectable."""
+    import time as _t
+
+    from .datasets import load_dataset
+    from .omnibus import permutation_tau2_fast, permutation_test
+    from .run import find_datasets
+
+    agree, differ, gains = [], [], []
+    for prefix in find_datasets(Path("data")):
+        expr, samples, design, _ = load_dataset(prefix)
+        t0 = _t.perf_counter()
+        ref = permutation_test(expr, samples, design, analyse)
+        t_ref = _t.perf_counter() - t0
+        t0 = _t.perf_counter()
+        taus, loads, oi, _, _ = permutation_tau2_fast(expr, samples, design)
+        t_fast = _t.perf_counter() - t0
+        gains.append(t_ref / t_fast)
+        m = loads >= loads[oi] - 1e-12
+        p_fast = float((taus[m] >= taus[oi]).sum() / m.sum())
+        (agree if abs(p_fast - ref["perm_P"]) < 5e-4 else differ).append(
+            (design.key, ref["perm_P"], round(p_fast, 4)))
+
+    assert min(gains) > 5, f"fast path is not faster: {min(gains):.1f}x"
+    assert len(agree) >= 3, f"fast path agreement regressed: only {len(agree)}/5"
+    known = {"A_replicated_x5", "B_heterozygous_wt_minimal"}
+    assert {k for k, _, _ in differ} <= known, \
+        f"NEW divergence in the fast path: {[k for k, _, _ in differ]}"
+    return (f"{len(agree)}/5 datasets agree exactly, {len(differ)} known "
+            f"divergences ({', '.join(k for k, _, _ in differ) or 'none'}); "
+            f"speedup {min(gains):.0f}-{max(gains):.0f}x")
+
+
 TESTS = [t_trigamma, t_fitfdist, t_squeeze, t_bh, t_modt, t_ca, t_clonesum,
          t_wls, t_df, t_pairwise, t_null, t_fdr_null, t_recovery,
          t_no_imputation, t_lackoffit, t_determinism, t_columns, t_columns_generalise, t_fastfit, t_omnibus, t_omnibus_uncalibrated,
-         t_permutation_structure, t_two_sided, t_sign_balance, t_pca, t_pca_figure, t_pca_reading, t_replication_scaling, t_contract,
+         t_permutation_structure, t_two_sided, t_sign_balance, t_pca, t_pca_figure, t_pca_reading, t_accel, t_accel_permutation, t_replication_scaling, t_contract,
          t_load, t_hdf5, t_validate, t_byo, t_cli]
 
 

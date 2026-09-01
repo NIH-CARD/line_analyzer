@@ -207,15 +207,46 @@ def run(backend="numpy", device="cuda", loop_limit=20000, n_designs=30, seed=0):
     return rows
 
 
+def bench_accel(backend="auto", device="cuda", dtype=np.float64, n_designs=30):
+    """The real pipeline shape: resident clone summaries, P designs over them."""
+    from .accel import sweep_designs
+    from .backend import resolve
+
+    b = resolve(backend, device)
+    rng = np.random.default_rng(0)
+    print(f"\naccel.sweep_designs on {b.label}, dtype={np.dtype(dtype).name}")
+    hdr = (f"{'proteins':>9} {'clones':>7} {'designs':>8} {'ms':>9} "
+           f"{'GB/s':>7} {'per design ms':>14}")
+    print(hdr); print("-" * len(hdr))
+    for n, c in [(20_000, 5), (20_000, 25), (100_000, 25), (1_000_000, 25)]:
+        dose = np.repeat(np.arange(3.0), int(np.ceil(c / 3)))[:c]
+        M = rng.normal(23, 1.0, (n, c)); W = rng.uniform(1, 3, (n, c))
+        designs = [np.column_stack([np.ones(c), rng.permutation(dose)])
+                   for _ in range(n_designs)]
+        sweep_designs(M, W, designs[:2], backend=b, dtype=dtype)   # warm up
+        t0 = time.perf_counter()
+        sweep_designs(M, W, designs, backend=b, dtype=dtype)
+        b.sync()
+        t = time.perf_counter() - t0
+        gb = n_designs * 3 * n * c * np.dtype(dtype).itemsize / 1e9
+        print(f"{n:>9,} {c:>7} {n_designs:>8} {1e3*t:>9.1f} {gb/t:>7.1f} "
+              f"{1e3*t/n_designs:>14.2f}")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--backend", default="numpy", choices=["numpy", "cupy", "torch"])
+    ap.add_argument("--backend", default="numpy",
+                    choices=["auto", "numpy", "cupy", "torch"])
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--designs", type=int, default=30)
     ap.add_argument("--loop-limit", type=int, default=20000,
                     help="skip the per-protein loop above this protein count")
+    ap.add_argument("--dtype", default="float64", choices=["float32", "float64"])
+    ap.add_argument("--accel-only", action="store_true")
     args = ap.parse_args()
-    run(args.backend, args.device, args.loop_limit, args.designs)
+    if not args.accel_only:
+        run(args.backend, args.device, args.loop_limit, args.designs)
+    bench_accel(args.backend, args.device, np.dtype(args.dtype), args.designs)
 
 
 if __name__ == "__main__":

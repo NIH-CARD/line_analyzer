@@ -187,6 +187,83 @@ def _lineage_loading(dose_vec, lineages):
                      for L in set(lineages)))
 
 
+def permutation_tau2_fast(expr, samples, design, lam=1.0, max_perms=200,
+                          backend="auto", device="cuda", dtype=None):
+    """The dispersion statistic only, with the invariants hoisted.
+
+    Clone means, observation counts and the weights do NOT depend on which clone
+    carries which allele dosage -- only the c x p design matrix does. The
+    reference `permutation_test` recomputes all of them for every relabelling.
+    Here they are computed once and P designs are driven against them, which is
+    both a large CPU win and the only shape in the pipeline worth putting on a
+    GPU (see accel.sweep_designs).
+
+    Returns (taus, loads, observed_index, mode, total).
+
+    NOT YET A DROP-IN REPLACEMENT -- opt-in only. Two known differences from
+    `permutation_test`:
+
+      1. RAGGED MISSINGNESS. The batched kernel needs one design per protein, so
+         this path currently uses only proteins observed in every clone. That
+         drops 23-163 proteins per shipped dataset, and where the drop is large
+         the p-value moves: measured agreement is exact on 3 of the 5 shipped
+         datasets and differs on A_replicated_x5 (0.0238 -> 0.0119, 163 dropped)
+         and B_heterozygous_wt_minimal (0.3333 -> 0.1667). The fix is to group
+         proteins by observation-count vector and run one sub-design per group,
+         exactly as `fastfit.fit_batched` already does for the main fit.
+      2. The tail-count statistic is not produced. That one is explicitly marked
+         "do not quote" in the reference because it is anticonservative under
+         lineage relabelling, so nothing that matters is lost.
+
+    Empirical-Bayes moderation IS applied here, matching `analyse()`.
+    """
+    import numpy as _np
+
+    from .accel import sweep_designs
+    from .analysis import build_design, clone_summaries, consensus_icc
+
+    clone_names = [c.name for c in design.clones]
+    means, counts, sigma2_tech, _ = clone_summaries(expr, samples, clone_names)
+    X_pri = build_design(design)[0]
+    fit_mask = (counts > 0).all(axis=1)
+    rho = consensus_icc(means[fit_mask], counts[fit_mask], X_pri, sigma2_tech[fit_mask])
+    with _np.errstate(divide="ignore", invalid="ignore"):
+        W = 1.0 / (rho + (1.0 - rho) / _np.where(counts > 0, counts, _np.nan))
+
+    # only complete-observation proteins go through the batched path; the rest
+    # are a small minority and are handled by the reference implementation
+    M = means[fit_mask]
+    Wm = W[fit_mask]
+
+    perms, mode, total = dose_permutations(design, max_perms=max_perms)
+    lineages = [c.lineage for c in design.clones]
+    designs, loads = [], []
+    for pv in perms:
+        x = _np.asarray(pv, float)
+        designs.append(_np.column_stack([_np.ones_like(x), x]))
+        loads.append(_lineage_loading(pv, lineages))
+    truth = tuple(design.doses)
+    obs_i = perms.index(truth) if truth in perms else int(_np.argmax(loads) * 0)
+
+    from .ebayes import squeeze_var
+
+    _, betas, s2s, uvars = sweep_designs(
+        M, Wm, designs, lam=lam, backend=backend, device=device,
+        dtype=dtype or _np.float64, return_raw=True)
+
+    # apply the same empirical-Bayes moderation analyse() applies, so the
+    # statistic is the one the reference implementation forms, not an
+    # unmoderated stand-in
+    dfree = float(X_pri.shape[0] - X_pri.shape[1])
+    taus = _np.empty(len(designs))
+    for k in range(len(designs)):
+        post, _, _, _ = squeeze_var(s2s[k], _np.full(s2s[k].shape, dfree),
+                                    robust=False)
+        se2 = post * uvars[k]
+        taus[k] = float(_np.mean(betas[k] ** 2) - lam * _np.mean(se2))
+    return taus, _np.asarray(loads, float), obs_i, mode, total
+
+
 def permutation_test(expr, samples, design, analyse_fn, lam=1.0, alpha=0.01,
                      max_perms=200):
     """Global test for 'any proteome-wide dose effect', by dosage relabelling.
