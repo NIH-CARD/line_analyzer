@@ -97,6 +97,16 @@ Each of these looks like an improvement and is not. All are pinned by tests.
 
 Roughly in order of value.
 
+- [ ] **Performance: the fit is memory-bound at ~1.3 FLOP/byte.** Measured on
+      one throttled core: the per-protein loop runs 7-40x slower than the
+      batched einsum, and a closed-form p=2 kernel (explicit 2x2 inverse, no
+      `solve`) is a further 2.7-4.9x on top. `consensus_icc` is still a
+      per-protein loop -- 30,597 `np.linalg.lstsq` calls per dataset. Also hoist
+      `clone_summaries` out of the permutation loop: clone means and counts do
+      not depend on allele dosage, so 31 permutations recompute an invariant.
+      `bench.py` measures all of this; run `python -m proteomics_revertant.bench`.
+      GPU is not worth it -- see the benchmark's own conclusion and the notes
+      below.
 - [ ] **`analyse()` is 243 lines.** Decompose into: clone reduction -> filtering
       and track assignment -> weighted fit -> moderation -> contrasts ->
       integration -> calls. Each step already has a comment header marking the
