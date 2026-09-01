@@ -1,0 +1,27 @@
+{
+  "key": "B_heterozygous_wt_minimal",
+  "label": "Background B, minimal: one clone per genotype state (underpowered)",
+  "units": "log2 normalised reporter intensity (TMT, internal reference scaled)",
+  "missing_value": "empty cell = protein not detected in that run (never imputed)",
+  "notes": "Three clones, one residual degree of freedom, no matched-dose pair. Shipped deliberately as the negative control for the design: it still recovers the large planted effect but loses the on/off protein and every corroborating contrast.",
+  "planted_truth": "Same planted effects as the other backgrounds; the difference is how few of them survive with three clones.",
+  "seed": 20260901,
+  "n_proteins": 1000,
+  "n_libraries": 12,
+  "n_clones": 3,
+  "pct_missing": 8.91,
+  "column_documentation": {
+    "library": "unique id of one MS run; must match a column of intensities.tsv",
+    "clone": "clonal isolate the run came from -- THE UNIT OF REPLICATION",
+    "state": "genotype label, e.g. wild_type / het_edit / hom_revertant",
+    "dose": "number of mutant alleles carried by the clone: 0, 1 or 2",
+    "lineage": "editing event the clone descends from; siblings share off-targets",
+    "tech_rep": "replicate index within the clone (separate digest + injection)",
+    "plex": "TMT plex / acquisition batch, fitted as a blocking factor"
+  },
+  "files": {
+    "intensities": "B_heterozygous_wt_minimal.intensities.tsv",
+    "samples": "B_heterozygous_wt_minimal.samples.tsv",
+    "truth": "B_heterozygous_wt_minimal.truth.tsv"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "key": "A_homozygous_wt",
+  "label": "Background A: homozygous wild-type parental, full allelic series",
+  "units": "log2 normalised reporter intensity (TMT, internal reference scaled)",
+  "missing_value": "empty cell = protein not detected in that run (never imputed)",
+  "notes": "Five clones spanning 0, 1, 2, 1, 0 mutant alleles. Doses 0 and 1 are each carried by two clones with different editing histories, so the residual of the dose model is clone-to-clone artefact rather than pipetting noise.",
+  "planted_truth": "PROT_0042: abundant, -2.2 log2 per allele, quantified in every run. PROT_0777: recessive on/off, absent from the homozygous edit only. 40 further responders at N(0, 0.45) per allele, a third recessive.",
+  "seed": 20260901,
+  "n_proteins": 1000,
+  "n_libraries": 20,
+  "n_clones": 5,
+  "pct_missing": 8.95,
+  "column_documentation": {
+    "library": "unique id of one MS run; must match a column of intensities.tsv",
+    "clone": "clonal isolate the run came from -- THE UNIT OF REPLICATION",
+    "state": "genotype label, e.g. wild_type / het_edit / hom_revertant",
+    "dose": "number of mutant alleles carried by the clone: 0, 1 or 2",
+    "lineage": "editing event the clone descends from; siblings share off-targets",
+    "tech_rep": "replicate index within the clone (separate digest + injection)",
+    "plex": "TMT plex / acquisition batch, fitted as a blocking factor"
+  },
+  "files": {
+    "intensities": "A_homozygous_wt.intensities.tsv",
+    "samples": "A_homozygous_wt.samples.tsv",
+    "truth": "A_homozygous_wt.truth.tsv"
+  }
+}

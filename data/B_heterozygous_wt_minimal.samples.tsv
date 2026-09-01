@@ -1,0 +1,13 @@
+library	clone	state	dose	lineage	tech_rep	plex
+Par_t1	Par	parental_het	1	parental	1	plex1
+Par_t2	Par	parental_het	1	parental	2	plex1
+Par_t3	Par	parental_het	1	parental	3	plex1
+Par_t4	Par	parental_het	1	parental	4	plex1
+HomEd_t1	HomEd	hom_edit	2	edit_r1	1	plex1
+HomEd_t2	HomEd	hom_edit	2	edit_r1	2	plex1
+HomEd_t3	HomEd	hom_edit	2	edit_r1	3	plex1
+HomEd_t4	HomEd	hom_edit	2	edit_r1	4	plex1
+HomRev_t1	HomRev	hom_revertant	0	edit_r2	1	plex1
+HomRev_t2	HomRev	hom_revertant	0	edit_r2	2	plex1
+HomRev_t3	HomRev	hom_revertant	0	edit_r2	3	plex1
+HomRev_t4	HomRev	hom_revertant	0	edit_r2	4	plex1

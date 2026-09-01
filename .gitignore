@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+.ruff_cache/
+.pytest_cache/
+.DS_Store
+
+# generated: `python -m proteomics_revertant.run` rebuilds these in ~110 s
+results/
+
+# fixtures ARE tracked -- tests assert against the shipped answer keys, and the
+# .h5 mirrors are small. Regenerate with `make_data --outdir data --hdf5`.
