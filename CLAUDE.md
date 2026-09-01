@@ -111,9 +111,15 @@ Roughly in order of value.
 - [ ] **Test suite is ~4 minutes**, dominated by two checks at 112 s and 99 s
       (the CLI end-to-end and the replication comparison). Add a fast/slow split
       so the inner loop is seconds. Do not delete the slow ones.
-- [ ] **No lint or type checking.** Add ruff and a `pyproject.toml` config;
-      annotations are inconsistent (`analysis.py` has almost none, `omnibus.py`
-      has some).
+- [ ] **Lint baseline: 30 findings, all cosmetic.** `ruff` is configured in
+      `pyproject.toml` but the code has never been run through it. Breakdown:
+      11 unsorted-imports, 5 redefined-while-unused (mostly test-local imports
+      shadowing module-level ones), 3 semicolon statements, 3 unused variables,
+      3 non-PEP585 annotations, 2 deprecated typing imports, 2 unused imports,
+      1 if-else that should be a ternary. 18 auto-fixable with `ruff check
+      --fix`. Deliberately left un-fixed so the diff is yours to review rather
+      than buried in the baseline commit. Type annotations are inconsistent
+      (`analysis.py` has almost none, `omnibus.py` has some).
 - [ ] **README is ~4,000 words** and mixes user guide, statistical rationale and
       verification log. Split into `README.md` (how to run), `STATISTICS.md`
       (why), `VALIDATION.md` (the test evidence table).
@@ -123,6 +129,18 @@ Roughly in order of value.
 - [ ] `pca.t_pca_figure` asserts the PC1-3 restriction by scraping source with
       `inspect.getsource`. Replace with a module-level `SCORE_PAIRS` constant
       that both the figure and the test import.
+
+## Fast start
+
+```bash
+ruff check .                       # 30 cosmetic findings, 18 auto-fixable
+ruff check . --fix                 # start here; it is a safe first commit
+python -m proteomics_revertant.tests   # must stay 34/34
+```
+
+The `analyse()` decomposition is the highest-value item but also the riskiest;
+do the lint pass and the `SCORE_PAIRS` constant first to get a feel for the test
+suite's coverage before touching it.
 
 ## Repository hygiene
 
