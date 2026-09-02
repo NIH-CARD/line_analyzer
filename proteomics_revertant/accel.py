@@ -96,6 +96,23 @@ def tau2_statistic(xp, beta_dose, se_dose, lam=1.0):
             - lam * xp.einsum("n,n->", se_dose, se_dose) / se_dose.shape[0])
 
 
+# Below this many clone-summary elements (proteins x clones) a GPU loses to
+# numpy: the kernel is memory-bound, so a small sweep is over before the PCIe
+# round trip and the CUDA context have paid for themselves. Measured on an
+# RTX 5080 against numpy, 30 designs, float64 -- CPU wins at 125k elements
+# (5k x 25), the GPU wins from 250k up, and the two are level near 100k:
+#
+#     elements     CPU ms    GPU ms
+#        25,000       4.5      24.6
+#       125,000      19.8      37.6
+#       250,000      98.7      46.4
+#     2,500,000    1447.2     278.8
+#
+# This only steers `backend="auto"`. An explicit backend is always honoured --
+# `bench.py` has to be able to ask for the slow one on purpose.
+GPU_MIN_ELEMENTS = 250_000
+
+
 def sweep_designs(means, W, designs, unscaled_var=None, lam=1.0,
                   backend="auto", device="cuda", dtype=np.float64,
                   chunk=None, return_beta=False, return_raw=False):
@@ -107,9 +124,24 @@ def sweep_designs(means, W, designs, unscaled_var=None, lam=1.0,
     the caller can precompute since it does not depend on the data -- but it is
     computed here when omitted.
 
+    NOTE `unscaled_var` is only correct when the weights are the same for every
+    protein. With ragged missingness (X'WX)^-1 varies per protein, so leave it
+    None and let the per-protein factor be computed here.
+
+    With `backend="auto"` the device is chosen by problem size, not merely by
+    whether a GPU exists: see GPU_MIN_ELEMENTS. A panel of a few thousand
+    analytes runs faster on the CPU, and picking the GPU there made the hoisted
+    permutation path *slower* than the reference it is supposed to beat.
+
     Returns the tau2 statistic per design, and optionally the dose coefficients.
     """
-    b = backend if isinstance(backend, Backend) else resolve(backend, device)
+    if isinstance(backend, Backend):
+        b = backend
+    elif backend == "auto":
+        b = (resolve("auto", device) if means.size >= GPU_MIN_ELEMENTS
+             else resolve("numpy"))
+    else:
+        b = resolve(backend, device)
     xp = b.xp
     n, c = means.shape
     p = designs[0].shape[1]
