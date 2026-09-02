@@ -12,3 +12,10 @@ results/
 
 # fixtures ARE tracked -- tests assert against the shipped answer keys, and the
 # .h5 mirrors are small. Regenerate with `make_data --outdir data --hdf5`.
+
+# Working notes for AI coding assistants. Kept out of the repository: it is
+# scaffolding for the tooling, not documentation for users of the pipeline,
+# and a file named for an assistant reads as noise in a public project.
+# The durable engineering content -- the statistical rationale, the output
+# reference, the known limitations -- lives in README.md.
+CLAUDE.md

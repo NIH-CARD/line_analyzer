@@ -1269,7 +1269,8 @@ def t_genomic_lambda():
     lam25 = lambda_inflation(res25, n_boot=200)["lambda_hat"]
     assert 0.70 <= lam25 <= 0.95, (
         f"25-clone lambda is {lam25}, outside the documented 0.70-0.95 band. "
-        "See 'Lambda does not converge to 1' in CLAUDE.md before changing this.")
+        "lambda does not converge to 1 as panels grow: the artefact null is "
+        "heavy-tailed. See README section 2.1 before changing this.")
     assert abs(res25["lambda_artifact"].iloc[0] - lam25) < 1e-3, \
         "lambda_artifact must report the unfloored estimate, since it is not applied"
 

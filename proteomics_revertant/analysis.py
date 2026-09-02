@@ -412,7 +412,8 @@ def analyse(expr: pd.DataFrame, samples: pd.DataFrame, design,
     #     p_gc = stats.chi2.sf(chi2, 1)
     #
     # Two reasons the pipeline declines to do it. First, on these panels lambda
-    # is usually BELOW 1 (see "Lambda does not converge to 1" in CLAUDE.md), and
+    # is usually BELOW 1 (see "lambda below 1 is normal here" in README section
+    # 2.1), and
     # dividing by a lambda under 1 inflates every statistic -- the opposite of a
     # correction, and dangerous where the deep tail is already fat. Second, a
     # column named `*_recalibrated` invites quoting without the reader ever
