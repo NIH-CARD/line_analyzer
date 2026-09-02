@@ -7,6 +7,13 @@ name = "proteomics-revertant"
 version = "0.1.0"
 description = "Allele-dosage differential abundance for CRISPR edit/revertant clone panels"
 requires-python = ">=3.9"
+license = {text = "MIT"}
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3",
+]
 dependencies = ["numpy>=1.24", "scipy>=1.10", "pandas>=2.0", "matplotlib>=3.7"]
 
 [project.optional-dependencies]
