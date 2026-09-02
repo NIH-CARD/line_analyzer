@@ -21,8 +21,10 @@ Three things are drawn:
                   transparent cloud per class (a 95% normal-theory ellipse where
                   there are enough libraries, a padded convex hull otherwise).
   loading arrows  the proteins pulling hardest on the two axes being shown.
-  loading table   for PC1-10, the proteins with the largest absolute loadings,
-                  written to TSV so they can be followed up.
+  loading table   for PC1-10, the features with the largest absolute loadings,
+                  written to TSV so they can be followed up. A second table
+                  ranks up to the top 100 features by variance-weighted
+                  influence across the retained components.
 
 Only the three panels among PC1, PC2 and PC3 are plotted (1v2, 1v3, 2v3). The
 loading TABLE still covers PC1-10, because a component can matter for
@@ -99,8 +101,27 @@ def run_pca(expr: pd.DataFrame, n_comp: int = 10, scale: bool = False):
     )
 
 
-def top_loadings(pca, n_top=15):
-    """Largest absolute loading per component, plus an overall influence score."""
+def top_loadings(pca, n_top=15, n_influence=100):
+    """Largest absolute loading per component, plus an overall influence ranking.
+
+    Two tables, answering two different questions:
+
+      per_pc      for each component, the `n_top` features pulling hardest on
+                  that specific axis.
+      overall     the `n_influence` features contributing most to the retained
+                  variation as a whole, ranked. "Up to": a dataset with fewer
+                  complete-case features than the cap yields correspondingly
+                  fewer rows.
+
+    The overall influence score is variance-weighted, sum_j loading_ij^2 * var_j.
+    Squaring makes the direction of the loading irrelevant -- what is being
+    measured is how much variation the feature accounts for, not which way it
+    moves -- and weighting by the variance each component explains stops a large
+    loading on a negligible component from outranking a moderate loading on the
+    dominant one. Because the loadings of each component are unit-normalised,
+    these scores sum across all features to the total retained variance, so
+    `influence_pct` reads directly as a percentage of it.
+    """
     L = pca["loadings"]
     var = pca["var_explained"]
     rows = []
@@ -116,12 +137,22 @@ def top_loadings(pca, n_top=15):
 
     # variance-weighted influence across PC1-10: how much of the retained
     # variation does this protein actually account for
-    infl = (L ** 2 * var[None, :]).sum(axis=1)
-    overall = (pd.DataFrame(dict(protein_id=pca["proteins"],
-                                 influence=np.round(infl, 6)))
-               .sort_values("influence", ascending=False)
-               .head(50).reset_index(drop=True))
+    contrib = L ** 2 * var[None, :]
+    infl = contrib.sum(axis=1)
+    total = float(infl.sum())
+    dominant = np.argmax(contrib, axis=1)
+    overall = (pd.DataFrame(dict(
+        protein_id=pca["proteins"],
+        influence=np.round(infl, 6),
+        influence_pct=np.round(100.0 * infl / total, 4) if total > 0
+        else np.zeros_like(infl),
+        dominant_component=[f"PC{j + 1}" for j in dominant],
+        loading_on_dominant=np.round(L[np.arange(L.shape[0]), dominant], 5)))
+        .sort_values("influence", ascending=False)
+        .head(n_influence).reset_index(drop=True))
     overall.insert(0, "rank", np.arange(1, len(overall) + 1))
+    overall["cumulative_influence_pct"] = np.round(
+        overall["influence_pct"].cumsum(), 4)
     return per_pc, overall
 
 
@@ -362,7 +393,8 @@ def build_meta(samples, design):
     return meta
 
 
-def run_one(prefix, outdir: Path, n_comp=10, n_top=15, scale=False):
+def run_one(prefix, outdir: Path, n_comp=10, n_top=15, scale=False,
+             n_influence=100):
     from .datasets import load_dataset
 
     expr, samples, design, _ = load_dataset(prefix)
@@ -374,7 +406,7 @@ def run_one(prefix, outdir: Path, n_comp=10, n_top=15, scale=False):
     png = outdir / f"{key}_pca.png"
     figure_for(design, expr, samples, pca, meta, png)
 
-    per_pc, overall = top_loadings(pca, n_top=n_top)
+    per_pc, overall = top_loadings(pca, n_top=n_top, n_influence=n_influence)
     per_pc.to_csv(outdir / f"{key}_pca_loadings.tsv", sep="\t", index=False)
     overall.to_csv(outdir / f"{key}_pca_influence.tsv", sep="\t", index=False)
 
@@ -400,7 +432,9 @@ def main():
                     help="components to retain for the loading table (plots "
                          "always show PC1-3 only)")
     ap.add_argument("--top", type=int, default=15,
-                    help="proteins per component in the loading table")
+                    help="features per component in the loading table")
+    ap.add_argument("--top-influence", type=int, default=100,
+                    help="features in the ranked overall influence table")
     ap.add_argument("--scale", action="store_true",
                     help="standardise each protein before decomposition")
     args = ap.parse_args()
@@ -410,7 +444,8 @@ def main():
 
     for prefix in find_datasets(Path(args.data)):
         design, pca, story, png = run_one(prefix, outdir, args.components,
-                                          args.top, args.scale)
+                                          args.top, args.scale,
+                                          args.top_influence)
         print("=" * 70)
         print(design.label)
         print(story)
