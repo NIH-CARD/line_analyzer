@@ -1172,9 +1172,116 @@ def t_accel_permutation():
             f"speedup {min(gains):.0f}-{max(gains):.0f}x")
 
 
+@check("genomic-control lambda is the GWAS definition and is reported consistently")
+def t_genomic_lambda():
+    """lambda must recover a KNOWN inflation, not merely look plausible.
+
+    If z ~ N(0, s^2) and p = 2 * sf(|z|), then chi2 = z^2 has median s^2 *
+    median(chi2_1), so lambda = s^2 exactly. That gives a closed-form reference
+    derived independently of the implementation.
+    """
+    from .analysis import analyse
+    from .datasets import load_dataset
+    from .ebayes import CHI2_1_MEDIAN, chi2_1_from_p, genomic_lambda
+    from .omnibus import lambda_inflation
+    from .qc import null_calibration
+
+    # the constant itself
+    assert abs(CHI2_1_MEDIAN - 0.4549364231) < 1e-9, \
+        f"median of chi2_1 is wrong: {CHI2_1_MEDIAN}"
+
+    # closed form vs scipy's generic inverse survival function
+    # p = 1 maps to chi2 = 0 exactly, so compare on a mixed tolerance rather
+    # than a pure ratio
+    pv = np.geomspace(1e-12, 1.0, 5000)
+    ref = stats.chi2.isf(pv, 1)
+    got = chi2_1_from_p(pv)
+    dev = float(np.max(np.abs(got - ref) - (1e-10 * np.abs(ref) + 1e-12)))
+    assert dev <= 0, f"closed-form chi2_1 differs from scipy, excess {dev:.2e}"
+
+    # a well-calibrated null must give 1.0
+    rng = np.random.default_rng(0)
+    lam_null = genomic_lambda(rng.uniform(0, 1, 400_000))
+    assert abs(lam_null - 1.0) < 0.02, f"lambda on uniform p is {lam_null:.4f}, not 1"
+
+    # a KNOWN inflation must be recovered: lambda should equal s^2
+    for s in (1.2, 1.5, 2.0):
+        z = rng.normal(0, s, 400_000)
+        p = 2.0 * stats.norm.sf(np.abs(z))
+        lam = genomic_lambda(p)
+        assert abs(lam - s ** 2) / s ** 2 < 0.02, \
+            f"inflation s^2={s**2:.2f} recovered as {lam:.3f}"
+
+    # too few p-values must refuse to answer rather than guess
+    assert not np.isfinite(genomic_lambda(rng.uniform(0, 1, 5))), \
+        "lambda should be NaN below the minimum feature count"
+
+    # the same number must appear in all three places that report it
+    seen = []
+    for key in ("A_homozygous_wt", "B_heterozygous_wt", "A_replicated_x3"):
+        expr, samples, design, _ = load_dataset(DATA / key)
+        res, meta = analyse(expr, samples, design)
+        qc_med = float(null_calibration(res, design)["lambda_gc"].median())
+        omni = lambda_inflation(res, n_boot=200)["lambda_hat"]
+        applied = res["lambda_artifact"].iloc[0]
+        assert abs(qc_med - omni) < 5e-3, \
+            f"{key}: qc lambda {qc_med} != omnibus lambda {omni}"
+        assert abs(applied - omni) < 1e-3, \
+            f"{key}: results lambda_artifact {applied} != omnibus lambda {omni}"
+        seen.append((key, omni))
+
+    # Genomic control is REPORTED, never APPLIED. No recalibrated column may be
+    # emitted, and dose_P must be the uncorrected two-sided p-value.
+    for key in ("A_homozygous_wt", "B_heterozygous_wt"):
+        expr, samples, design, _ = load_dataset(DATA / key)
+        r, _ = analyse(expr, samples, design)
+        bad = [c for c in r.columns if "recalibrat" in c.lower()]
+        assert not bad, f"{key}: pipeline must not emit corrected p-values: {bad}"
+        # `dose_t` and `df_moderated` are rounded in the output, so an exact
+        # reconstruction is not available. Instead assert that the UNCORRECTED
+        # reconstruction fits dose_P better than any genomic-control-corrected
+        # one would -- which is what "no correction was applied" means, and is
+        # insensitive to rounding.
+        t = r["dose_t"].to_numpy(float)
+        dfm = r["df_moderated"].to_numpy(float)
+        p = r["dose_P"].to_numpy(float)
+        ok = np.isfinite(t) & np.isfinite(dfm) & np.isfinite(p) & (p > 0)
+
+        def misfit(lam):
+            q = 2.0 * stats.t.sf(np.abs(t[ok]) / np.sqrt(lam), df=dfm[ok])
+            return float(np.median(np.abs(np.log10(np.maximum(q, 1e-300))
+                                          - np.log10(p[ok]))))
+
+        base = misfit(1.0)
+        for lam_try in (1.05, 1.10, 1.25):
+            assert base < misfit(lam_try), (
+                f"{key}: dose_P fits a lambda={lam_try} correction better than no "
+                "correction -- genomic control appears to have been applied")
+
+    # Lambda does NOT converge to 1 as the panel grows: the artefact null is
+    # heavy-tailed, so its bulk is narrower than the t reference even as its
+    # deep tail gets fatter. Measured on true-null simulations lambda settles in
+    # 0.77-0.88 and stays there. Pinned on the 25-clone panel so that anyone
+    # "correcting" lambda toward 1, or removing the max(lambda, 1) floor, fails
+    # here rather than silently deflating every standard error in the output.
+    expr, samples, design, _ = load_dataset(DATA / "A_replicated_x5")
+    res25, _ = analyse(expr, samples, design)
+    lam25 = lambda_inflation(res25, n_boot=200)["lambda_hat"]
+    assert 0.70 <= lam25 <= 0.95, (
+        f"25-clone lambda is {lam25}, outside the documented 0.70-0.95 band. "
+        "See 'Lambda does not converge to 1' in CLAUDE.md before changing this.")
+    assert abs(res25["lambda_artifact"].iloc[0] - lam25) < 1e-3, \
+        "lambda_artifact must report the unfloored estimate, since it is not applied"
+
+    return ("chi2_1 closed form == scipy to 1e-10; lambda=1.00 on a uniform null; "
+            f"known inflations 1.44/2.25/4.00 recovered within 2%; "
+            f"qc == omnibus == results on {len(seen)} panels; "
+            f"25-clone lambda {lam25} reported unfloored and never applied")
+
+
 TESTS = [t_trigamma, t_fitfdist, t_squeeze, t_bh, t_modt, t_ca, t_clonesum,
          t_wls, t_df, t_pairwise, t_null, t_fdr_null, t_recovery,
-         t_no_imputation, t_lackoffit, t_determinism, t_columns, t_columns_generalise, t_fastfit, t_omnibus, t_omnibus_uncalibrated,
+         t_no_imputation, t_lackoffit, t_determinism, t_genomic_lambda, t_columns, t_columns_generalise, t_fastfit, t_omnibus, t_omnibus_uncalibrated,
          t_permutation_structure, t_two_sided, t_sign_balance, t_pca, t_pca_figure, t_pca_reading, t_accel, t_accel_permutation, t_replication_scaling, t_contract,
          t_load, t_hdf5, t_validate, t_byo, t_cli]
 

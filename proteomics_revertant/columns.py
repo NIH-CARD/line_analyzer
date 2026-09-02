@@ -108,24 +108,16 @@ FIXED = [
      "back to the additive residual."),
 
     ("lambda_artifact", "calibration", "float",
-     "Genomic-control inflation factor estimated from the artefact contrasts. "
-     "Constant down the column.",
-     "median over artefact contrasts of (1.4826 * MAD of their t)^2, floored at 1",
-     "The artefact contrasts contain no variant signal by construction, so this "
-     "audits the standard errors. Near 1.0 is healthy; >1.1 means nominal SEs "
-     "are too small and the recalibrated columns are the ones to trust."),
-
-    ("dose_P_recalibrated", "calibration", "float",
-     "Dose-trend p-value, two-sided, after inflating the standard error by "
-     "sqrt(lambda).",
-     "2 * t.sf(|dose_t| / sqrt(lambda), df_moderated)",
-     "Identical to `dose_P` when lambda is 1. Use these when the artefact "
-     "contrasts show inflation."),
-
-    ("dose_FDR_recalibrated", "calibration", "float",
-     "Benjamini-Hochberg adjustment of `dose_P_recalibrated` across proteins.",
-     "BH over dose_P_recalibrated",
-     "The conservative version of the primary result."),
+     "Genomic-control inflation factor (lambda_GC) estimated from the artefact "
+     "contrasts. REPORTED, NOT APPLIED. Constant down the column.",
+     "median over artefact contrasts of "
+     "median(chi2_1^-1(1 - p)) / median(chi2_1), unfloored",
+     "A diagnostic, not a correction. The artefact contrasts carry no variant "
+     "signal by construction, so this audits the standard errors: 1.0 means the "
+     "median test statistic is the expected size, above 1.1 means nominal SEs "
+     "are too small. No recalibrated p-value column is emitted -- whether to "
+     "apply genomic control is the analyst's decision. Values below 1 are "
+     "normal on these panels and must NOT be divided out; see the README."),
 
     ("sign_concordant", "integration", "bool",
      "True if the two corroborating contrasts move in the same direction.",
@@ -317,8 +309,7 @@ def data_dictionary(design) -> pd.DataFrame:
              "no residue. Quote this rather than a non-significant artefact "
              "p-value."))
 
-    for c in ("lambda_artifact", "dose_P_recalibrated", "dose_FDR_recalibrated"):
-        add(fixed[c])
+    add(fixed["lambda_artifact"])
 
     c1, c2 = iut_pair(design)
     have_iut = {con.name for con in cons} >= {c1, c2}

@@ -33,17 +33,13 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .ebayes import CHI2_1_MEDIAN as _CHI2_MED
+from .ebayes import chi2_1_from_p as _CHI2
+from .ebayes import artefact_p_columns, genomic_lambda
+
 # ---------------------------------------------------------------------------
 # building blocks
 # ---------------------------------------------------------------------------
-
-
-def _robust_sd(x):
-    x = np.asarray(x, float)
-    x = x[np.isfinite(x)]
-    if x.size < 10:
-        return np.nan
-    return float(1.4826 * np.median(np.abs(x - np.median(x))))
 
 
 def _boot_ci(values, stat, n_boot=2000, seed=0, alpha=0.05):
@@ -62,32 +58,56 @@ def _boot_ci(values, stat, n_boot=2000, seed=0, alpha=0.05):
 
 
 def lambda_inflation(results, contrast="dose", n_boot=2000, seed=1):
-    """Calibration factor for a contrast, measured against the artefact contrasts.
+    """Genomic-control factor for the panel, measured on the artefact contrasts.
 
-    lambda = (robust SD of the artefact t-statistics)^2. Under honest standard
-    errors this is 1.0: the artefact contrasts have no signal in them, so their
-    moderated t values should look like a standard null. Above 1.0 means the
-    reported standard errors are too small for reasons unrelated to the variant
-    -- unmodelled clone structure, correlated off-target effects -- and every
-    p-value in the file is optimistic by that factor.
+    This is the GWAS inflation factor, lambda_GC, computed the standard way from
+    p-values:
+
+        lambda = median( chi2_1^{-1}(1 - p) ) / median( chi2_1 )
+
+    with the median taken across features and then across artefact contrasts.
+    Under honest standard errors it is 1.0: the artefact contrasts compare
+    clones of identical allele dosage, so they carry no variant signal and their
+    p-values should be uniform. Above 1.0 means the reported standard errors are
+    too small for reasons unrelated to the variant -- unmodelled clone
+    structure, correlated off-target effects -- and every p-value in the file is
+    optimistic by that factor.
+
+    The reported `lambda_hat` is unfloored, so a value below 1 is visible rather
+    than silently clipped; `analyse()` applies max(lambda, 1) when it actually
+    recalibrates, because deflating a standard error is never conservative.
+
+    Interpreting the interval matters as much as the point estimate. With five
+    clones there are only two artefact contrasts and the bootstrap interval is
+    wide; an interval spanning 1.0 means the data cannot distinguish honest
+    standard errors from modestly inflated ones, which is a statement about the
+    panel's size, not a clean bill of health.
     """
-    art = [c for c in results.columns
-           if c.startswith("artifact_") and c.endswith("_t")]
+    art = artefact_p_columns(results.columns)
     if not art:
         return dict(lambda_hat=1.0, lambda_lo=np.nan, lambda_hi=np.nan,
                     n_artefact_contrasts=0, source="none available")
-    per = {c.replace("_t", ""): _robust_sd(results[c]) ** 2 for c in art}
-    lam = float(np.median([v for v in per.values() if np.isfinite(v)]))
+    per = {c[:-2]: genomic_lambda(results[c]) for c in art}
+    finite = [v for v in per.values() if np.isfinite(v)]
+    if not finite:
+        return dict(lambda_hat=1.0, lambda_lo=np.nan, lambda_hi=np.nan,
+                    n_artefact_contrasts=len(art),
+                    source="too few testable features per artefact contrast")
+    lam = float(np.median(finite))
 
-    mat = results[art].to_numpy(float)
+    # Convert p to chi-square ONCE and bootstrap the chi-square matrix. The
+    # transform is per-feature and does not depend on the resample, so doing it
+    # inside the loop would repeat 2000 identical calculations.
+    mat = _CHI2(results[art].to_numpy(float))
     ok = np.isfinite(mat).all(axis=1)
-    lo, hi = _boot_ci(mat[ok], lambda dr: float(np.median(
-        [_robust_sd(dr[:, j]) ** 2 for j in range(dr.shape[1])])),
+    lo, hi = _boot_ci(mat[ok], lambda dr: float(
+        np.median(np.median(dr, axis=0)) / _CHI2_MED),
         n_boot=n_boot, seed=seed)
     return dict(lambda_hat=round(lam, 4), lambda_lo=round(lo, 4),
                 lambda_hi=round(hi, 4), n_artefact_contrasts=len(art),
                 per_contrast={k: round(v, 4) for k, v in per.items()},
-                source="robust SD^2 of artefact-contrast t statistics")
+                source="genomic control (median chi2_1) on artefact-contrast "
+                       "p-values")
 
 
 def pi1_storey(p, lam=0.5):
@@ -522,14 +542,17 @@ def narrate(o) -> str:
         A(f"    lambda from artefact contrasts: {o['lambda_hat']} "
           f"[{o['lambda_lo']}, {o['lambda_hi']}]   (1.0 = honest)")
         if o["lambda_hat"] > 1.10:
-            verdict = "standard errors are OPTIMISTIC; use the recalibrated columns"
+            verdict = ("standard errors are OPTIMISTIC by about "
+                       f"{100 * (np.sqrt(o['lambda_hat']) - 1):.0f}%; consider "
+                       "genomic control downstream")
         elif o["lambda_hi"] < 0.90:
-            verdict = ("standard errors are CONSERVATIVE by about "
-                       f"{100 * (1 - np.sqrt(o['lambda_hat'])):.0f}% -- p-values "
-                       "are valid but power is being left on the table")
+            verdict = ("the bulk of the internal null is NARROWER than the "
+                       "reference; expected on these panels, and not a defect")
         else:
             verdict = "standard errors look honest"
         A(f"    -> {verdict}")
+        A("       lambda is reported, never applied: no genomic control is")
+        A("       performed here and no recalibrated column is written.")
     A("")
     A("  How much of the proteome is affected?")
     A(f"    estimated fraction (pi1)      : {o['pi1']:.3f} "

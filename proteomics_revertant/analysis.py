@@ -27,7 +27,8 @@ from scipy import stats
 from scipy.special import comb
 
 from . import config as C
-from .ebayes import bh, moderated_t, squeeze_var
+from .ebayes import (artefact_p_columns, bh, genomic_lambda, moderated_t,
+                     squeeze_var)
 from .fastfit import fit_batched
 
 
@@ -377,28 +378,46 @@ def analyse(expr: pd.DataFrame, samples: pd.DataFrame, design,
         out[f"{con.name}_equiv_FDR"] = bh(p_eq)
 
     # ---- empirical-null recalibration (genomic control on artefact contrasts) --
-    # The artefact contrasts contain no variant signal by construction, so the
-    # spread of their moderated t-statistics is a direct check on whether the
-    # nominal standard errors are honest. lambda > 1 means they are too small.
-    art_t = [out[f"{c.name}_t"].to_numpy(float) for c in cons if c.role == "artefact"]
-    lam = 1.0
-    if art_t:
-        sds = []
-        for t in art_t:
-            t = t[np.isfinite(t)]
-            if t.size > 50:
-                sds.append(1.4826 * np.median(np.abs(t - np.median(t))))
-        if sds:
-            lam = float(max(np.median(sds) ** 2, 1.0))
-    out["lambda_artifact"] = round(lam, 4)
-    if lam > 1.0:
-        t_gc = out["dose_t"].to_numpy(float) / np.sqrt(lam)
-        p_gc = 2.0 * stats.t.sf(np.abs(t_gc), df=df_total)
-        out["dose_P_recalibrated"] = p_gc
-        out["dose_FDR_recalibrated"] = bh(p_gc)
-    else:
-        out["dose_P_recalibrated"] = out["dose_P"].to_numpy()
-        out["dose_FDR_recalibrated"] = out["dose_FDR"].to_numpy()
+    # The artefact contrasts contain no variant signal by construction: they
+    # compare clones of identical allele dosage, so whatever separates them is
+    # drift and off-target editing. That makes their p-values a designed null,
+    # and the genomic-control factor computed on them a direct check on whether
+    # the nominal standard errors are honest. lambda > 1 means they are too
+    # small and every p-value in the file is optimistic by that factor.
+    #
+    # This is the GWAS estimator, median(chi2_1^-1(1-p)) / median(chi2_1), taken
+    # over the artefact-contrast p-values -- not over `dose_P`. In a GWAS the
+    # null is "most markers do nothing"; here the null is a designed feature of
+    # the panel, which is a stronger footing. Using `dose_P` would fold genuine
+    # variant signal into the calibration constant and shrink real effects.
+    # Selected by `artefact_p_columns`, NOT by contrast role: the role also
+    # covers the aggregate revertant-vs-baseline contrast, which re-uses the
+    # same clones and would make this lambda disagree with the one omnibus and
+    # qc report for the identical run.
+    art_p = [out[c].to_numpy(float) for c in artefact_p_columns(out.columns)]
+    lam = np.nan
+    if art_p:
+        lams = [genomic_lambda(p) for p in art_p]
+        lams = [v for v in lams if np.isfinite(v)]
+        if lams:
+            lam = float(np.median(lams))
+    out["lambda_artifact"] = round(lam, 4) if np.isfinite(lam) else np.nan
+
+    # REPORTED, NOT APPLIED. The pipeline deliberately does not perform genomic
+    # control: no recalibrated p-value column is emitted and `dose_P` is never
+    # divided by anything. Correcting is the reader's decision, not the
+    # pipeline's, and it is one line downstream:
+    #
+    #     chi2 = chi2_1_from_p(results["dose_P"]) / lam
+    #     p_gc = stats.chi2.sf(chi2, 1)
+    #
+    # Two reasons the pipeline declines to do it. First, on these panels lambda
+    # is usually BELOW 1 (see "Lambda does not converge to 1" in CLAUDE.md), and
+    # dividing by a lambda under 1 inflates every statistic -- the opposite of a
+    # correction, and dangerous where the deep tail is already fat. Second, a
+    # column named `*_recalibrated` invites quoting without the reader ever
+    # deciding whether the correction was warranted. The estimate is reported
+    # unfloored so the sign of the departure from 1 stays visible.
 
     # ---- intersection-union call ------------------------------------------
     c1, c2 = iut_pair(design)

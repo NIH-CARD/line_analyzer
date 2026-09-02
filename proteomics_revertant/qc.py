@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .ebayes import artefact_p_columns, genomic_lambda
+
 
 def missingness_report(expr, samples):
     m = ~np.isfinite(expr.to_numpy(float))
@@ -54,23 +56,40 @@ def artefact_scale(results, design):
 
 
 def null_calibration(results, design):
-    """Are artefact-contrast statistics over-dispersed relative to N(0,1)?
+    """Are artefact-contrast statistics over-dispersed relative to their null?
 
-    If lambda >> 1 the nominal standard errors are too small for reasons that
-    have nothing to do with the variant, and the primary contrast should be
-    recalibrated (or the clone variance component inflated).
+    One row per artefact contrast -- a pair of clones carrying the SAME allele
+    dosage, so any difference between them is drift and off-target editing
+    rather than variant signal. Two views of the same question:
+
+      lambda_gc       the genomic-control inflation factor, the GWAS
+                      definition, computed from the contrast's p-values.
+                      1.0 is perfect calibration; above 1 means the standard
+                      errors are too small and the p-values optimistic.
+      robust_sd_of_t  the same over-dispersion read off the t-statistics
+                      directly, via the median absolute deviation. Reported
+                      alongside because it is easy to eyeball -- roughly
+                      sqrt(lambda_gc) when the null is well behaved, and a
+                      visible disagreement between the two means the t
+                      distribution is skewed rather than merely widened.
+
+    `lambda_gc` here matches `lambda_hat` in `<key>_overall.tsv`, which is the
+    median of this column across contrasts.
     """
     out = []
-    for c in [c for c in results.columns
-              if c.startswith("artifact_") and c.endswith("_t")]:
-        t = results[c].to_numpy(float)
+    for c in artefact_p_columns(results.columns):
+        base = c[:-2]
+        p = results[c].to_numpy(float)
+        lam = genomic_lambda(p)
+        t = results[f"{base}_t"].to_numpy(float) if f"{base}_t" in results else np.array([])
         t = t[np.isfinite(t)]
-        if t.size < 20:
+        if t.size < 20 or not np.isfinite(lam):
             continue
         mad = float(np.median(np.abs(t - np.median(t))))
-        out.append(dict(contrast=c.replace("_t", ""),
-                        robust_sd_of_t=round(1.4826 * mad, 3),
-                        lambda_gc=round((1.4826 * mad) ** 2, 3)))
+        out.append(dict(contrast=base,
+                        n=int(np.isfinite(p).sum()),
+                        lambda_gc=round(lam, 3),
+                        robust_sd_of_t=round(1.4826 * mad, 3)))
     return pd.DataFrame(out)
 
 
