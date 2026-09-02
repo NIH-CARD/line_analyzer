@@ -21,3 +21,5 @@ results/
 CLAUDE.md
 
 adata_prepped_for_pipeline.h5ad
+
+data/*
