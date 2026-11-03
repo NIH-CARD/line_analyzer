@@ -36,10 +36,10 @@
 library(zellkonverter)
 library(SingleCellExperiment)
 library(dplyr)
+library(reticulate)
 
-sce <- readH5AD(
-  "/data/CARD_AUX/users/paquolaac/projects/iNDI_bulk_RNAseq/analysis/anndata/qc/filter/_o/adata.h5ad"
-)
+h5ad_path <- "/data/CARD_AUX/users/paquolaac/projects/iNDI_bulk_RNAseq/analysis/anndata/qc/filter/_o/adata.h5ad"
+sce <- readH5AD(h5ad_path, reader = "R")
 sce
 assayNames(sce)
 colnames(colData(sce))
@@ -84,7 +84,37 @@ if (!is.null(qc_drop_col) && qc_drop_col %in% names(sampleData)) {
 # real distinct gene. CONFIRM this against your metadata before trusting it --
 # if GRN1 is a real distinct locus, remove this line.
 sampleData$gene[sampleData$gene == "GRN1"] <- "GRN"
+sampleData <- sampleData %>%
+  mutate(
+    across(c(gene, variant, zygosity), ~ trimws(as.character(.x))),  # factors -> text first
+    gene    = ifelse(is.na(gene) | gene == "", "WT", gene),
+    gene    = ifelse(gene == "GRN1", "GRN", gene),
+    variant = ifelse(gene == "WT", "WT", variant),
+    variant = ifelse(variant == "R317W_R406W", "R317W", variant),
+    variant = ifelse(variant == "V171I", "V717I", variant),   # typo in metadata
+    variant = ifelse(gene == "FUS" & variant == "R126C", "R216C", variant),
+    gene_edits = case_when(
+      zygosity == "wt"              ~ 0,
+      zygosity == "rev"             ~ 2,
+      zygosity %in% c("het", "hom") ~ 1,
+      TRUE ~ NA_real_
+    ),
+    allele_dosage = case_when(
+      zygosity %in% c("wt", "rev") ~ 0,
+      zygosity == "het"            ~ 1,
+      zygosity == "hom"            ~ 2,
+      TRUE ~ NA_real_
+    ),
+    culture_method = factor(ifelse(differentiation_person %in% "automated", "automated", "manual"),
+                            levels = c("manual", "automated"))
+  )
 
+full_rank <- function(f, cd) {
+  tryCatch({
+    mm <- model.matrix(f, as.data.frame(cd))
+    qr(mm)$rank == ncol(mm)
+  }, error = function(e) FALSE)
+}
 # FUS should only have one variant, R216C -- R126C was a mislabel, not a
 # second reversion target (confirmed).
 mislabelled <- sampleData$gene == "FUS" & sampleData$variant == "R126C"
@@ -204,10 +234,11 @@ cat(sprintf("\n%d samples, %d clones, %d mutation groups (incl. WT)\n\n",
 print(table(sampleData$mutation, sampleData$zygosity))
 
 # ---- assemble and write a single h5ad --------------------------------------
+library(anndataR)
 sce_out <- SingleCellExperiment(
   assays = list(counts = counts_mat),
   colData = sampleData
 )
 
-writeH5AD(sce_out, file = "adata_prepped_for_pipeline.h5ad", X_name = "counts")
-cat("\nwrote adata_prepped_for_pipeline.h5ad\n")
+write_h5ad(sce_out, "/data/comocn/DEGauntlet/data/adata_INDI.h5ad",
+           x_mapping = "counts") 
