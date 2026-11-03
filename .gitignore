@@ -19,3 +19,7 @@ results/
 # The durable engineering content -- the statistical rationale, the output
 # reference, the known limitations -- lives in README.md.
 CLAUDE.md
+
+adata_prepped_for_pipeline.h5ad
+
+data/indi*
